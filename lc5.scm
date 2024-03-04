@@ -17,23 +17,34 @@
       (apply displayln stuff)
       (newline)))
 
+;; in this attempt we're modeling our generalized sequences, we call
+;; them LCs, as folding functions. Each LC receives function and
+;; accumulator and computes (fn (elem-at n) (fn (elem-at (- n 1))
+;; ... acc)). I.e. applying fn element and accumulator for each
+;; element in turn and the result becoming next accumulator.
+
+;; Zero (aka empty) LC just returns acc.
 (define %zero
   (lambda (fn acc) acc))
 
 (define (zero->lc) %zero)
 
+;; Unused.
 (define (%cons-lazy hd lc-thunk)
   (lambda (fn acc)
     (define v (fn hd acc))
     ((lc-thunk) fn v)))
 
+;; Creates LC with one element.
 (define (one->lc v)
   (lambda (fn acc)
     (fn v acc)))
 
+;; Creates LC with given list of values
 (define (->lc . values)
   (list->lc values))
 
+;; Same as above with list passed explicitly
 (define (list->lc lst)
   (lambda (fn init)
     (define (rec acc rest)
@@ -42,6 +53,9 @@
           (rec (fn (car rest) acc) (cdr rest))))
     (rec init lst)))
 
+;; Creates LC with list of numbers starting from start, increasing by
+;; maybe-step or 1, and continuing until it hits end (end is not
+;; included).
 (define (range->lc start end . maybe-step)
   (define (range start end step fn init)
     (if (>= start end)
@@ -51,6 +65,10 @@
     (range start end (if (null? maybe-step) 1 (car maybe-step))
            fn init)))
 
+;; creates LS with elements (iter-init (iter-fn iter-init) (iter-fn (iter-fn iter-init)) ...)
+;;
+;; Note it never stops, so LC consumption logic might need means to do
+;; non-local exit.
 (define (iterate->lc iter-fn iter-init)
   (lambda (fn init)
     (let loop ((acc init)
@@ -59,6 +77,7 @@
       (define next-tter-acc (iter-fn iter-acc))
       (loop next-acc next-tter-acc))))
 
+;; Helper to display LC's elements.
 (define (lc->displayln lc)
   (define (body item acc)
     (displayln "item id " acc " is " item)
@@ -69,22 +88,54 @@
 ;; ---- lazy lists: (cons e1 (lambda () (cons e2 (lambda () ... '()))))
 ;;
 ;; Basically similar to streams but without promises so maybe a little
-;; cheaper. Convenient for some intermediate operations.
+;; cheaper. This is convenient for some intermediate operations
+;; otherwise difficult with plain LC. Most notably, trunction and
+;; zipping multiple sequences together.
+
+;; converts LC (where LC drives iteration) to lazy list (where
+;; iteration is driven externally). As noted above, we use those lazy
+;; lists in places where truncation of sequences output is needed.
+;;
+;; The implementation is a bit of head-scratcher. But here are couple
+;; hints. First, we use continuations (that return out of list CDR
+;; thunks) as accumulators. Second thing to keep in mind is we track 2
+;; continuations. One mentioned above, second is used to "return" back
+;; to LC's iteration. Each time LC's fn is called we capture this
+;; (second type of) continuation. And each time thunk is expanded we
+;; capture first kind.
+;;
+;; I am not sure why I choose to introduce r-cp thingy and what was
+;; the idea behind the name.
+;;
+;; This is the original function I wrote, unsure why I left it so
+;; over-complicated. Below is clearer rewrite
+;; (define (%lc->lazy-list lc)
+;;   (define r-cp (lambda (fn init cont)
+;;                  (define (body e acc)
+;;                    (call/cc (lambda (return)
+;;                               (fn e acc return))))
+;;                  (cont (lc body init))))
+;;   (call/cc (lambda (first-return)
+;;              (r-cp (lambda (e acc set-acc)
+;;                      (acc (cons e (lambda ()
+;;                                     (call/cc (lambda (return)
+;;                                                (set-acc return)))))))
+;;                    first-return
+;;                    (lambda (acc)
+;;                      (acc '()))))))
 
 (define (%lc->lazy-list lc)
-  (define r-cp (lambda (fn init cont)
-                 (define (body e acc)
-                   (call/cc (lambda (return)
-                              (fn e acc return))))
-                 (cont (lc body init))))
+  ;; this is the folding function we pass to LC
+  (define (body e thunk-return)
+    (call/cc (lambda (body-return)
+               (define thunk (lambda ()
+                               (call/cc (lambda (new-thunk-return)
+                                          (body-return new-thunk-return)))))
+               (thunk-return (cons e thunk)))))
+
   (call/cc (lambda (first-return)
-             (r-cp (lambda (e acc set-acc)
-                     (acc (cons e (lambda ()
-                                    (call/cc (lambda (return)
-                                               (set-acc return)))))))
-                   first-return
-                   (lambda (acc)
-                     (acc '()))))))
+             (define last-acc (lc body first-return))
+             (last-acc '()))))
 
 (define (lazy-list-trunc n lst)
   (if (> n 0)
@@ -106,6 +157,8 @@
       (cons (fn (car lst)) (lambda ()
                              (ll-map1 fn ((cdr lst)))))))
 
+;; helper for lc:map below. Just like map except more-lst is
+;; (explicitly passed) regular list of lazy-lists.
 (define (lazy-list-map fn lst more-lst)
   (call/cc
    (lambda (return)
@@ -121,6 +174,8 @@
                (lambda ()
                  (lazy-list-map fn ((cdr lst)) rests)))))))
 
+;; folding is how we convert back from lazy-lists to LCs.
+
 (define (lazy-list-fold fn acc lst)
   (if (null? lst)
       acc
@@ -132,6 +187,14 @@
 
 ;; ------ end of lazy lists
 
+;; lc function takes given LC and transforms it through list of LC->LC
+;; functions. So, note, p0 and rest are one arg lambdas. Lets call the
+;; LC transformers below. Well, last element could and usually does
+;; produce non-LC value (i.e. converting to regular list, vector, or
+;; printing etc).
+;;
+;; Note, usually name lc transformers by having "lc:"
+;; prefix. I.e. lc:map, lc:filter etc.
 (define (lc lc0 p0 . rest)
   (define (rec lc rest)
     (if (null? rest)
@@ -139,6 +202,8 @@
         (rec ((car rest) lc) (cdr rest))))
   (rec (p0 lc0) rest))
 
+;; creates LC tansformer (i.e. lambda that takes LC) that filters it's
+;; elements.
 (define (lc:filter pred)
   (lambda (lc)
     (lambda (fn init)
@@ -148,6 +213,7 @@
                 acc))
           init))))
 
+;; creates LC transformer that maps elements.
 (define (lc:map1 map-fn)
   (lambda (lc)
     (lambda (fn init)
@@ -155,12 +221,19 @@
             (fn (map-fn e) acc))
           init))))
 
+;; creates LC trasformer that "zips" it's LC with a given list of LC's
+;; and then maps this with N arg function. I.e. like lisp's map. See
+;; map1 for simpler and faster one arg version.
 (define (lc:map fn . lcs)
   (lambda (lc)
     (define ll (%lc->lazy-list lc))
     (define lls (map %lc->lazy-list lcs))
     (lazy-list->lc (lazy-list-map fn ll lls))))
 
+;; creates LC transformer that zips it's LC with a given `lc2'
+;; transformer. Resultant transformer produces values like this
+;;
+;; (e1 . e2) (i.e. (cons e1 e2), i.e. improper lists)
 (define (lc:zip2 lc2)
   (lambda (lc1)
     (define ll1 (%lc->lazy-list lc1))

@@ -27,6 +27,8 @@
           init
           (loop (fn start init) (+ start step))))))
 
+;; notc is debugging tool (not to be used in production code). It
+;; prevents tail call optimization, so errors get nicer backtraces.
 (define (notc v)
   v)
 

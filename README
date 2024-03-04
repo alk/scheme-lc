@@ -1,0 +1,88 @@
+This project contains an unfinished exploration of generalized
+sequences for Scheme. I upload it to GitHub rather than let it sit
+idle on my disk. As I upload this, I am making only cosmetic changes
+and adding some comments. I am unsure if I like the result, but form
+is good enough to be publicly shared.
+
+This is public domain.
+
+I was seeking the following combination of features:
+
+* Don't lean on syntax abstractions. Those don't compose as well and
+  can be added on top for syntax sugar.
+
+* be "nice" and general.
+
+* purely functional and call/cc-compatible. I.e., no internal mutable
+  state. Any intermediate code that runs can call/cc and return
+  "multiple times" if it needs to. Rules out srfi-158-style generators
+  and srfi-42 Eager Comprehensions.
+
+* some degree of efficiency. Prefer avoiding consing on every
+  iteration. Rules out streams.
+
+The basic idea is that any sequence of values can be reasonably
+efficiently represented by its fold implementation. This is of course,
+not novel. Many others have tried this. One notable reference here is
+srfi-171 Transdusers, but I found their API style somewhat odd.
+
+I have implemented (and somewhat tested) several iterations of
+(mostly) this idea. Trying to balance power and performance. The later
+iteration isn't necessarily better than the previous iteration.
+
+In the code, I use the name LC to name this generic sequence
+abstraction. Now that a few years have passed since I wrote this, I
+don't recall why I chose this name.
+
+* lc.scm represents LCs as functions that get folding "body" (i.e., a
+  function that will receive elements in order and the last value of
+  the accumulator and produce the new value of the accumulator),
+  accumulator to start with and continuation to pass the result
+  to. Basically CPS-style version of lc5.scm. We can construct LCs
+  from range of integers (lists and other sources of values would be
+  trivial to implement), we have the equivalent of mapconcat (which
+  subsumes one arg map, and filter) and functions that consume LCs
+  (like printing or counting). There is also an exploration of the
+  idea that LCs could auto-detect if they're given one argument and
+  magically transform this to mapconcat. The downside is, due to
+  CPS-style, there is seemingly no way to avoid per-iteration consing.
+
+* lc2.scm explores LCs as functions that get two continuations. One is
+  to be called if we're at the end (called null-cont in the code), and
+  one is to be called with the current element and "tail" LC. This
+  also does per-iteration consing.
+
+* lc3.scm removes the "wrap-as-mapc" idea and explores (poorly named)
+  lc combinator. As we construct LCs from other LCs, we normally end
+  up with very nested and not always conveniently ordered
+  code. I.e. (f (g v)) first applies g to v and then f to the result,
+  but it is listed backward. For larger chains, it isn't as nice to
+  write and read. Clojure has threading macro (->), and lc is
+  similar. Except it is not macro. And it only allows threading into
+  one arg function. So, common routines like lc:filter become
+  "curried" functions. Otherwise, "whether threading arg is first or
+  last" risks becoming the source of confusion. To be used like this:
+
+  (lc (inf-pythagorean)
+      (lc:filter (lambda (vec)
+        (zero? (truncate-remainder (vector-ref vec 2) 11))))
+      (lc:truncate 10))
+
+  I.e., all but the first args have to produce single arg
+  functions. And then LC calls the second arg with the first
+  arg. Then, 3rd argument with the result of the previous call, and so
+  on. Then, it returns the result. We introduce the convention that
+  functions prefixed "lc:" (i.e., with colon) combine some LC with
+  some action or transformation. I.e., they return lambda that takes
+  LC rather than returning LC directly.
+
+* lc5.scm returns to the idea of LC being a folding
+  implementation. But it performs folding non-CPS style. I.e., LC is a
+  function that takes folding "body," and initial accumulator and
+  bodies are called with element and accumulator, and whatever it
+  returns becomes the next value of the accumulator. On some
+  implementations, it should allow non-consing and "tight-most"
+  iterations. However, when we want to zip LCs (i.e., to iterate 2 or
+  more sequences in parallel) or stop consuming results early, we have
+  to resort to call/cc. There is a variant of lazy lists used whenever
+  we do that.

@@ -173,9 +173,6 @@
 (define (lc->first lc)
   (lc->agg (lc:truncate 1 lc) (lambda (acc _ cont) (cont acc))))
 
-(define (lc:first lc)
-  (lc:one (lc->agg lc)))
-
 (define (lc->nth n lc)
   (lc->first (lc:nthtail n lc)))
 
@@ -207,6 +204,7 @@
            (fn acc v cont)))
      (lc wf (cons n tag) cont))))
 
+;; lc->agg is just reduce. I.e. fold with no initial value.
 (define (lc->agg lc fn)
   (define %empty (list))
   (lc (lambda (acc item cont)
